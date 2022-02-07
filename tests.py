@@ -1,0 +1,224 @@
+import pytest
+import yaml
+from click.testing import CliRunner
+from docums.__main__ import build_command
+
+
+def setup_docums(plugin_config, monkeypatch, tmpdir, enabled=True):
+    monkeypatch.chdir(tmpdir)
+    monkeypatch.syspath_prepend(tmpdir)
+    (tmpdir / "docs").mkdir()
+    (tmpdir / "site").mkdir()
+    runner = CliRunner()
+    with open(str(tmpdir / "docums.yml"), "w") as f:
+        yaml.dump(
+            {
+                "site_name": "test",
+                "docs_dir": "docs",
+                "site_dir": "site",
+                "plugins": [
+                    {
+                        "docums-simple-hooks": {
+                            "hooks": plugin_config,
+                            "enabled": enabled,
+                        }
+                    }
+                ],
+            },
+            f,
+        )
+    return runner
+
+
+def test_no_hooks_defined(tmpdir, monkeypatch):
+    runner = setup_docums({}, monkeypatch, tmpdir)
+
+    result = runner.invoke(build_command)
+    assert result.exit_code == 0
+    assert (
+        "Warning: No hooks defined. "
+        "The docums-simple-hooks plugin will not run anything." in result.output
+    )
+
+
+def test_wrong_hook(tmpdir, monkeypatch):
+    runner = setup_docums({"no_hook": "test"}, monkeypatch, tmpdir)
+
+    result = runner.invoke(build_command)
+    assert result.exit_code == 0
+    assert "'no_hook' is not valid hook name, will be ignored."
+
+
+def test_no_such_module(tmpdir, monkeypatch):
+    runner = setup_docums(
+        {"on_pre_build": "test_docs.hooks:on_pre_build"}, monkeypatch, tmpdir
+    )
+
+    result = runner.invoke(build_command)
+    assert result.exit_code == 0
+    assert "Cannot import module 'test_docs.hooks'" in result.output
+
+
+def test_no_attribute(tmpdir, monkeypatch):
+    test_docs = tmpdir / "no_attribute"
+    test_docs.mkdir()
+
+    with open(str(test_docs / "hooks.py"), "w") as f:
+        f.write("TEST = True")
+
+    runner = setup_docums(
+        {"on_pre_build": "no_attribute.hooks:on_pre_build"}, monkeypatch, tmpdir
+    )
+
+    result = runner.invoke(build_command)
+    assert result.exit_code == 0
+    assert (
+        "Config value: 'plugins'. "
+        "Warning: Module 'no_attribute.hooks' doesn't have attribute 'on_pre_build'"
+        in result.output
+    )
+
+
+def test_no_function(tmpdir, monkeypatch):
+    test_docs = tmpdir / "no_function"
+    test_docs.mkdir()
+
+    with open(str(test_docs / "hooks.py"), "w") as f:
+        f.write("on_pre_build = True")
+
+    runner = setup_docums(
+        {"on_pre_build": "no_function.hooks:on_pre_build"}, monkeypatch, tmpdir
+    )
+
+    result = runner.invoke(build_command)
+    assert result.exit_code == 0
+    assert "'no_function.hooks:on_pre_build' is not callable." in result.output
+
+
+def test_valid_hook_package(tmpdir, monkeypatch):
+    test_docs = tmpdir / "hooks_pkg"
+    test_docs.mkdir()
+    open(str(test_docs / "__init__.py"), "w").close()
+
+    with open(str(test_docs / "hooks.py"), "w") as f:
+        f.write(
+            "def on_pre_build(*args, **kwargs):\n"
+            '    print("from on_pre_build")\n'
+            "def on_post_build(*args, **kwargs):\n"
+            '    print("from on_post_build")\n'
+        )
+
+    runner = setup_docums(
+        {
+            "on_pre_build": "hooks_pkg.hooks:on_pre_build",
+            "on_post_build": "hooks_pkg.hooks:on_post_build",
+        },
+        monkeypatch,
+        tmpdir,
+    )
+
+    result = runner.invoke(build_command)
+    assert result.exit_code == 0
+    output = result.output.splitlines()
+    assert output[0] == "from on_pre_build"
+    assert output[-1] == "from on_post_build"
+
+
+def test_valid_hook_namespace_package(tmpdir, monkeypatch):
+    test_docs = tmpdir / "hooks_ns_pkg"
+    test_docs.mkdir()
+
+    with open(str(test_docs / "hooks.py"), "w") as f:
+        f.write(
+            "def on_pre_build(*args, **kwargs):\n"
+            '    print("from on_pre_build")\n'
+            "def on_post_build(*args, **kwargs):\n"
+            '    print("from on_post_build")\n'
+        )
+
+    runner = setup_docums(
+        {
+            "on_pre_build": "hooks_ns_pkg.hooks:on_pre_build",
+            "on_post_build": "hooks_ns_pkg.hooks:on_post_build",
+        },
+        monkeypatch,
+        tmpdir,
+    )
+
+    result = runner.invoke(build_command)
+    assert result.exit_code == 0
+    output = result.output.splitlines()
+    assert output[0] == "from on_pre_build"
+    assert output[-1] == "from on_post_build"
+
+
+def test_valid_hook_subpackage(tmpdir, monkeypatch):
+    test_package = tmpdir / "hooks_top_pkg"
+    test_package.mkdir()
+    open(str(test_package / "__init__.py"), "w").close()
+    test_docs = test_package / "hooks_sub_pkg"
+    test_docs.mkdir()
+    open(str(test_docs / "__init__.py"), "w").close()
+
+    with open(str(test_docs / "hooks.py"), "w") as f:
+        f.write(
+            "def on_pre_build(*args, **kwargs):\n"
+            '    print("from on_pre_build")\n'
+            "def on_post_build(*args, **kwargs):\n"
+            '    print("from on_post_build")\n'
+        )
+
+    runner = setup_docums(
+        {
+            "on_pre_build": "hooks_top_pkg.hooks_sub_pkg.hooks:on_pre_build",
+            "on_post_build": "hooks_top_pkg.hooks_sub_pkg.hooks:on_post_build",
+        },
+        monkeypatch,
+        tmpdir,
+    )
+
+    result = runner.invoke(build_command)
+    assert result.exit_code == 0
+    output = result.output.splitlines()
+    assert output[0] == "from on_pre_build"
+    assert output[-1] == "from on_post_build"
+
+
+def test_valid_hook_module(tmpdir, monkeypatch):
+    with open(str(tmpdir / "hooks.py"), "w") as f:
+        f.write(
+            "def on_pre_build(*args, **kwargs):\n"
+            '    print("from on_pre_build")\n'
+            "def on_post_build(*args, **kwargs):\n"
+            '    print("from on_post_build")\n'
+        )
+
+    runner = setup_docums(
+        {"on_pre_build": "hooks:on_pre_build", "on_post_build": "hooks:on_post_build",},
+        monkeypatch,
+        tmpdir,
+    )
+
+    result = runner.invoke(build_command)
+    assert result.exit_code == 0
+    output = result.output.splitlines()
+    assert output[0] == "from on_pre_build"
+    assert output[-1] == "from on_post_build"
+
+
+@pytest.mark.parametrize(
+    "enabled", [True, False],
+)
+def test_disabling_plugin(tmpdir, monkeypatch, enabled):
+    with open(str(tmpdir / "hooks.py"), "w") as f:
+        f.write(
+            "def on_pre_build(*args, **kwargs):\n" '    print("from on_pre_build")\n'
+        )
+
+    runner = setup_docums(
+        {"on_pre_build": "hooks:on_pre_build",}, monkeypatch, tmpdir, enabled=enabled,
+    )
+
+    result = runner.invoke(build_command)
+    assert result.exit_code == 0
+    assert ("from on_pre_build" in result.output) == enabled
